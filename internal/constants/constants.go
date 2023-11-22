@@ -8,8 +8,9 @@ const (
 
 	Version = "v1"
 
-	TransactionID = "transaction-id"
-	InvalidBody   = "invalid value for body"
+	TransactionID       = "transaction-id"
+	InvalidBody         = "invalid value for body"
+	InvalidIdentifyBody = "invalid identify request body"
 
 	//http
 	Accept          = "Accept"
