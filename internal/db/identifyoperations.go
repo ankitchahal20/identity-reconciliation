@@ -1,9 +1,7 @@
 package db
 
 import (
-	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 
@@ -16,219 +14,231 @@ import (
 
 func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.ContactRequest) (models.ContactResponse, *identityreconciliationerror.IdentityReconciliationError) {
 	txid := ctx.Request.Header.Get(constants.TransactionID)
-	//response := []models.ContactResponse{}
-	existingContact, err := p.FindContact(ctx, inputContact)
-	fmt.Println("Err : ", err)
-	fmt.Println("existingContact : ", existingContact)
 
-	if existingContact != nil {
-		// Contact already exists, update or create secondary contact
-		fmt.Println("Existing contact found")
-		fmt.Println("existingContact : ", existingContact.Email)
-		fmt.Println("existingContact : ", existingContact.PhoneNumber)
-		updatedContact, err := p.handleExistingContact(ctx, *existingContact, inputContact)
-		if err != nil {
-			return models.ContactResponse{}, &identityreconciliationerror.IdentityReconciliationError{
-				Code:    http.StatusInternalServerError,
-				Message: fmt.Sprintf("unable to get the contact details, err %v", err),
-				Trace:   txid,
-			}
-		}
-		fmt.Println("updatedContact : ", updatedContact)
-		// contactRespose := models.ContactResponse{}
-		// contactRespose.Emails = []string{contact.Email}
-		// contactRespose.PhoneNumbers = []string{contact.PhoneNumber}
-		// contactRespose.PrimaryContactID = *contact.ID
-		return models.ContactResponse{}, nil
-		//return *updatedContact, nil
-	} else {
-		fmt.Println("Existing contact not found")
-		// Create a new primary contact
-		contact := models.Contact{
-			Email:          inputContact.Email,
-			PhoneNumber:    inputContact.PhoneNumber,
-			LinkPrecedence: "primary",
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-		}
-
-		id, err := p.saveContact(ctx, contact)
-		fmt.Println("Error : ", err)
-		if err != nil {
-			return models.ContactResponse{}, &identityreconciliationerror.IdentityReconciliationError{
-				Code:    http.StatusInternalServerError,
-				Message: fmt.Sprintf("unable to get the contact details, err %v", err),
-				Trace:   txid,
-			}
-		}
-		contact.ID = id
-		contactRespose := models.ContactResponse{}
-		contactRespose.Emails = []string{contact.Email}
-		contactRespose.PhoneNumbers = []string{contact.PhoneNumber}
-		contactRespose.PrimaryContactID = *contact.ID
-		//contactRespose.SecondaryContactIDs = []int{&contact.LinkedID}
-		//response = append(response, contactRespose)
-		fmt.Println("Response : ", contactRespose)
-		return contactRespose, nil
-	}
-}
-
-func (p postgres) FindContact(ctx *gin.Context, inputContact models.ContactRequest) (*models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
-	txid := ctx.Request.Header.Get(constants.TransactionID)
-	query := "SELECT id, email, phoneNumber, linkedId, linkPrecedence, createdAt, updatedAt, deletedAt FROM contacts WHERE email=$1 OR phoneNumber=$2"
-	row := p.db.QueryRow(query, inputContact.Email, inputContact.PhoneNumber)
-
-	contact := models.Contact{}
-	err := row.Scan(&contact.ID,
-		&contact.Email,
-		&contact.PhoneNumber,
-		&contact.LinkedID,
-		&contact.LinkPrecedence,
-		&contact.CreatedAt,
-		&contact.UpdatedAt,
-		&contact.DeletedAt,
-	)
-	fmt.Println("Error : ", err)
-	if err != nil && err != sql.ErrNoRows {
-		// if err == sql.ErrNoRows {
-		// 	// Handle case where no rows were found
-		// 	return contact, &limitoffererror.CreditCardError{
-		// 		Code:    http.StatusNotFound,
-		// 		Message: "account not found",
-		// 		Trace:   txid,
-		// 	}
-		// }
-
-		utils.Logger.Error(fmt.Sprintf("error while scanning contact details from db, txid : %v, error: %v", txid, err))
-		return &contact, &identityreconciliationerror.IdentityReconciliationError{
-			Code:    http.StatusInternalServerError,
-			Message: fmt.Sprintf("unable to get the contact details, err %v", err),
-			Trace:   txid,
-		}
-	} else if err == sql.ErrNoRows {
-		return nil, nil
-	}
-
-	utils.Logger.Info(fmt.Sprintf("successfully fetched contact details from db, txid : %v", txid))
-
-	return &contact, nil
-}
-
-func (p postgres) handleExistingContact(ctx *gin.Context, existingContact models.Contact, inputContact models.ContactRequest) (*models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
-	txid := ctx.Request.Header.Get(constants.TransactionID)
-	// Check if the incoming request introduces new information
-	fmt.Println("existingContact.Email : ", existingContact.Email)
-	fmt.Println("inputContact.Email : ", inputContact.Email)
-	fmt.Println()
-	fmt.Println("existingContact.PhoneNumber : ", existingContact.PhoneNumber)
-	fmt.Println("inputContact.PhoneNumber : ", inputContact.PhoneNumber)
-	if (existingContact.Email != inputContact.Email) || (existingContact.PhoneNumber != inputContact.PhoneNumber) {
-		// Create a new secondary contact entry
-		fmt.Println("Creating a secondary contact")
-		secondaryContact := models.Contact{
-			Email:          inputContact.Email,
-			PhoneNumber:    inputContact.PhoneNumber,
-			LinkPrecedence: "secondary",
-			CreatedAt:      existingContact.CreatedAt,
-			UpdatedAt:      time.Now(),
-			//LinkedID:       existingContact.ID,
-		}
-
-		// Save the new secondary contact
-		linkedID, err := p.saveContact(ctx, secondaryContact)
-		if err != nil {
-			return nil, &identityreconciliationerror.IdentityReconciliationError{
-				Code:    http.StatusInternalServerError,
-				Message: fmt.Sprintf("unable to save the contact details, err %v", err),
-				Trace:   txid,
-			}
-		}
-
-		fmt.Println("secondary contact stored successfully")
-
-		//
-		// existingContact.LinkedID = secondaryContact.ID
-		// if err := p.saveContact(ctx, existingContact); err != nil {
-		// 	return nil, err
-		// }
-
-		// Update the existing contact to link to the new secondary contact
-		fmt.Println("linkedID.ID* : ", linkedID)
-		fmt.Println("linkedID.ID : ", *linkedID)
-		err = p.updateContact(ctx, existingContact, *linkedID)
-		if err != nil {
-			return nil, err
-		}
-
-		return &secondaryContact, nil
-	} else {
-		fmt.Println("No New information to be added for the existing user")
-	}
-
-	// No new information introduced, return the existing contact as is
-	return &existingContact, nil
-}
-
-func (p postgres) updateContact(ctx *gin.Context, contact models.Contact, linkedID int64) *identityreconciliationerror.IdentityReconciliationError {
-	txid := ctx.Request.Header.Get(constants.TransactionID)
-	_, err := p.db.Exec("UPDATE contacts SET linkedId = $1 WHERE id = $2", linkedID, contact.ID)
-	fmt.Println("err 3 ", err)
+	contacts, err := p.FindAllContacts(ctx, inputContact)
 	if err != nil {
-		log.Println("error updating limit offer status:", err)
-		return &identityreconciliationerror.IdentityReconciliationError{
+		utils.Logger.Error(fmt.Sprintf("error while reteriving all contacts, txid : %v", txid))
+		return models.ContactResponse{}, err
+	}
+
+	var contactList []models.Contact
+	if len(contacts) != 0 {
+		utils.Logger.Info(fmt.Sprintf("existing contact found for the given request, txid : %v", txid))
+		return p.handleExistingContact(ctx, contacts, inputContact)
+	}
+
+	utils.Logger.Info(fmt.Sprintf("no existing contact found for the given request, txid : %v", txid))
+
+	// Create a new entry if no existing contacts match
+	newContact := models.Contact{
+		Email:          inputContact.Email,
+		PhoneNumber:    inputContact.PhoneNumber,
+		LinkPrecedence: "primary",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	query := "INSERT INTO contacts (phoneNumber, email, linkedId, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
+	dbErr := p.db.QueryRow(query, newContact.PhoneNumber, newContact.Email, newContact.LinkedID, newContact.LinkPrecedence, newContact.CreatedAt, newContact.UpdatedAt).Scan(&newContact.ID)
+	if dbErr != nil {
+		utils.Logger.Error(fmt.Sprintf("error while creating a primary contact, txid : %v", txid))
+		return models.ContactResponse{}, &identityreconciliationerror.IdentityReconciliationError{
 			Code:    http.StatusInternalServerError,
-			Message: "error while updating the linkedId of existing contact",
+			Message: fmt.Sprintf("unable to fetch the contact details, err %v", dbErr),
 			Trace:   txid,
 		}
 	}
-	fmt.Println("Updation is successful")
-	return nil
+	utils.Logger.Info(fmt.Sprintf("new contact created for the given request, txid : %v", txid))
+	contactList = append(contactList, newContact)
+	return transformContact(contactList), nil
 }
 
-func (p postgres) saveContact(ctx *gin.Context, contact models.Contact) (*int64, *identityreconciliationerror.IdentityReconciliationError) {
-	txid := ctx.Request.Header.Get(constants.TransactionID)
-	if contact.ID == nil {
-		// Insert new contact
-		fmt.Println("Inserting a new row in saveContact")
+func (p postgres) handleExistingContact(ctx *gin.Context, contacts []models.Contact, inputContact models.ContactRequest) (models.ContactResponse, *identityreconciliationerror.IdentityReconciliationError) {
 
-		query := "INSERT INTO contacts (phoneNumber, email, linkedId, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
-		// result, err := p.db.Exec(query, contact.PhoneNumber, contact.Email, contact.LinkedID, contact.LinkPrecedence, contact.CreatedAt, contact.UpdatedAt)
-		err := p.db.QueryRow(query, contact.PhoneNumber, contact.Email, contact.LinkedID, contact.LinkPrecedence, contact.CreatedAt, contact.UpdatedAt).Scan(&contact.ID)
-		fmt.Println("Error while inserting a row : ", err)
+	if len(contacts) == 1 {
+		if contacts[0].Email != inputContact.Email || contacts[0].PhoneNumber != inputContact.PhoneNumber {
+			contactList, err := p.foundOneRecord(ctx, contacts, inputContact.Email, inputContact.PhoneNumber)
+			if err != nil {
+				return models.ContactResponse{}, err
+			}
+			return transformContact(contactList), nil
+		} else {
+			return transformContact(contacts), nil
+		}
+	}
+
+	if len(contacts) > 1 {
+		contactList, err := p.foundMultipleRecord(ctx, contacts, inputContact.Email, inputContact.PhoneNumber)
 		if err != nil {
+			return models.ContactResponse{}, err
+		}
+		return transformContact(contactList), nil
+	}
+
+	return models.ContactResponse{}, nil
+}
+
+func (p postgres) foundOneRecord(ctx *gin.Context, contacts []models.Contact, email string, phoneNumber string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
+	txid := ctx.Request.Header.Get(constants.TransactionID)
+	oldRecord := contacts[0]
+
+	// If by chance there is a problematic record, restore consistency
+	if oldRecord.LinkPrecedence == "secondary" {
+		oldRecord.LinkPrecedence = "primary"
+		_, err := p.db.Exec("UPDATE contacts SET linkPrecedence = $1 WHERE id = $2", oldRecord.LinkPrecedence, oldRecord.ID)
+		if err != nil {
+			utils.Logger.Error(fmt.Sprintf("error while updating the contacts info, txid : %v", txid))
 			return nil, &identityreconciliationerror.IdentityReconciliationError{
 				Code:    http.StatusInternalServerError,
-				Message: fmt.Sprintf("unable to save the contact details, err %v", err),
+				Message: fmt.Sprintf("unable to update the contact details, err %v", err),
 				Trace:   txid,
 			}
 		}
-
-		// lastInsertID, err := result.LastInsertId()
-		// fmt.Println("Err : ", err , "lastInsertID : ", lastInsertID)
-		// if err != nil {
-		// 	return &identityreconciliationerror.IdentityReconciliationError{
-		// 		Code:    http.StatusInternalServerError,
-		// 		Message: fmt.Sprintf("unable to save the contact details, err %v", err),
-		// 		Trace:   txid,
-		// 	}
-		// }
-		// contact.ID = &lastInsertID
-		fmt.Println("Last contactID is : ", *contact.ID)
 	}
-	// } else {
 
-	// 	fmt.Println("Updating the existimg contact in saveContact")
-	// 	// Update existing contact
-	// 	query := "UPDATE contacts SET phoneNumber=$1, email=$2, linkedId=$3, linkPrecedence=$4, updatedAt=$4 WHERE id=$5"
-	// 	_, err := p.db.Exec(query, contact.PhoneNumber, contact.Email, contact.LinkedID, contact.LinkPrecedence, contact.UpdatedAt, contact.ID)
-	// 	if err != nil {
-	// 		return &identityreconciliationerror.IdentityReconciliationError{
-	// 			Code:    http.StatusInternalServerError,
-	// 			Message: fmt.Sprintf("unable to save the contact details, err %v", err),
-	// 			Trace:   txid,
-	// 		}
-	// 	}
-	// }
+	newRecord := models.Contact{
+		Email:          email,
+		PhoneNumber:    phoneNumber,
+		LinkedID:       oldRecord.ID,
+		LinkPrecedence: "secondary",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+	query := "INSERT INTO contacts (phoneNumber, email, linkedId, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
+	err := p.db.QueryRow(query, newRecord.PhoneNumber, newRecord.Email, newRecord.LinkedID, newRecord.LinkPrecedence, newRecord.CreatedAt, newRecord.UpdatedAt).Scan(&newRecord.ID)
+	if err != nil {
+		utils.Logger.Error(fmt.Sprintf("error while creating a secondary contact, txid : %v", txid))
+		return nil, &identityreconciliationerror.IdentityReconciliationError{
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("unable to add new contact details, err %v", err),
+			Trace:   txid,
+		}
+	}
 
-	return contact.ID, nil
+	return []models.Contact{oldRecord, newRecord}, nil
+}
+
+// foundMultipleRecord function
+func (p postgres) foundMultipleRecord(ctx *gin.Context, contacts []models.Contact, email, phoneNumber string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
+	txid := ctx.Request.Header.Get(constants.TransactionID)
+	primaryRec := contacts[0]
+
+	var statements []string
+	statements = append(statements, fmt.Sprintf("UPDATE contacts SET linkPrecedence = 'primary' WHERE id = %d", *primaryRec.ID))
+
+	for index, contact := range contacts {
+		if index > 0 && (contact.LinkPrecedence != "secondary" || *contact.LinkedID != *primaryRec.ID) {
+			statements = append(statements, fmt.Sprintf("UPDATE contacts SET linkPrecedence = 'secondary', linkedId = %d WHERE id = %d", *primaryRec.ID, *contact.ID))
+		}
+	}
+
+	// Execute SQL update statements
+	for _, statement := range statements {
+		_, err := p.db.Exec(statement)
+		if err != nil {
+			utils.Logger.Error(fmt.Sprintf("error while updating contacts information, txid : %v", txid))
+			return nil, &identityreconciliationerror.IdentityReconciliationError{
+				Code:    http.StatusInternalServerError,
+				Message: fmt.Sprintf("unable to add new contact details, err %v", err),
+				Trace:   txid,
+			}
+		}
+	}
+
+	newRecord := models.Contact{
+		Email:          email,
+		PhoneNumber:    phoneNumber,
+		LinkedID:       primaryRec.ID,
+		LinkPrecedence: "secondary",
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	query := "INSERT INTO contacts (phoneNumber, email, linkedId, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
+	err := p.db.QueryRow(query, newRecord.PhoneNumber, newRecord.Email, newRecord.LinkedID, newRecord.LinkPrecedence, newRecord.CreatedAt, newRecord.UpdatedAt).Scan(&newRecord.ID)
+	if err != nil {
+		utils.Logger.Error(fmt.Sprintf("error while creating a secondary contact, txid : %v", txid))
+		return nil, &identityreconciliationerror.IdentityReconciliationError{
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("unable to add new contact details, err %v", err),
+			Trace:   txid,
+		}
+	}
+
+	return append(contacts, newRecord), nil
+}
+
+func (p postgres) FindAllContacts(ctx *gin.Context, inputContact models.ContactRequest) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
+	txid := ctx.Request.Header.Get(constants.TransactionID)
+
+	var contacts []models.Contact
+	query := "SELECT * FROM contacts WHERE email = $1 OR phoneNumber = $2"
+	rows, err := p.db.Query(query, inputContact.Email, inputContact.PhoneNumber)
+	if err != nil {
+		utils.Logger.Error(fmt.Sprintf("error while fetching all contacts information, txid : %v", txid))
+		return []models.Contact{}, &identityreconciliationerror.IdentityReconciliationError{
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("unable to fetch the contact details, err %v", err),
+			Trace:   txid,
+		}
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var contact models.Contact
+		if err := rows.Scan(
+			&contact.ID,
+			&contact.PhoneNumber,
+			&contact.Email,
+			&contact.LinkedID,
+			&contact.LinkPrecedence,
+			&contact.CreatedAt,
+			&contact.UpdatedAt,
+			&contact.DeletedAt,
+		); err != nil {
+			utils.Logger.Error(fmt.Sprintf("error while scanning the fetched records, txid : %v", txid))
+			return nil, &identityreconciliationerror.IdentityReconciliationError{
+				Code:    http.StatusInternalServerError,
+				Message: fmt.Sprintf("unable to scan the contact details, err %v", err),
+				Trace:   txid,
+			}
+		}
+		contacts = append(contacts, contact)
+	}
+	return contacts, nil
+}
+
+// transformContact function
+func transformContact(contacts []models.Contact) models.ContactResponse {
+	var (
+		emails              []string
+		phoneNumbers        []string
+		secondaryContactIds []int
+		primaryContactID    int
+	)
+	// this function will only be called when atleast one contact is found in db for the given request,
+	if len(contacts) != 0 {
+		primaryContactID = *contacts[0].ID
+	}
+
+	for index, contact := range contacts {
+		if contact.Email != "" && !utils.Contains(emails, contact.Email) {
+			emails = append(emails, contact.Email)
+		}
+		if contact.PhoneNumber != "" && !utils.Contains(phoneNumbers, contact.PhoneNumber) {
+			phoneNumbers = append(phoneNumbers, contact.PhoneNumber)
+		}
+		if index > 0 {
+			secondaryContactIds = append(secondaryContactIds, int(*contact.ID))
+		}
+	}
+
+	contactResponse := models.ContactResponse{}
+	contactResponse.Emails = emails
+	contactResponse.PhoneNumbers = phoneNumbers
+	contactResponse.PrimaryContactID = primaryContactID
+	if len(secondaryContactIds) != 0 {
+		contactResponse.SecondaryContactIDs = &secondaryContactIds
+	}
+	return contactResponse
 }

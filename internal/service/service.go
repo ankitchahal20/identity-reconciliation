@@ -52,7 +52,6 @@ func Identify() func(ctx *gin.Context) {
 				utils.RespondWithError(ctx, err.Code, err.Message)
 				return
 			}
-
 			ctx.JSON(http.StatusOK, reponse)
 
 			ctx.Writer.WriteHeader(http.StatusOK)
@@ -71,6 +70,5 @@ func (service *IdentityReconciliationService) identify(ctx *gin.Context, contact
 		utils.Logger.Info(fmt.Sprintf("received error from db layer during find/create contact txid : %v", txid))
 		return models.ContactResponse{}, err
 	}
-	fmt.Println("createdContact : ", createdContact)
 	return createdContact, nil
 }

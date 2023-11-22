@@ -12,17 +12,17 @@ type ContactRequest struct {
 }
 
 type ContactResponse struct {
-	PrimaryContactID    int64   `json:"primary_contact_id"`
+	PrimaryContactID    int      `json:"primary_contact_id"`
 	Emails              []string `json:"emails"`
 	PhoneNumbers        []string `json:"phone_numbers"`
-	SecondaryContactIDs []*int64 `json:"secondary_contact_ids,omitempty"`
+	SecondaryContactIDs *[]int   `json:"secondary_contact_ids,omitempty"`
 }
 
 type Contact struct {
-	ID             *int64      `json:"id"`
+	ID             *int        `json:"id"`
 	PhoneNumber    string      `json:"phone_number"`
 	Email          string      `json:"email"`
-	LinkedID       *int64      `json:"linked_id"`
+	LinkedID       *int        `json:"linked_id"`
 	LinkPrecedence string      `json:"link_precedence"`
 	CreatedAt      time.Time   `json:"created_at"`
 	UpdatedAt      time.Time   `json:"updated_at"`
