@@ -3,6 +3,7 @@ package middleware
 import (
 	"fmt"
 	"net/http"
+	"net/mail"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -49,10 +50,29 @@ func validateIdentifyInput(ctx *gin.Context, txid string) {
 		return
 	}
 
+	_, parseErr := mail.ParseAddress(contact.Email)
+		if parseErr != nil {
+			utils.Logger.Error(fmt.Sprintf("email received is incorrect, txid : %v", txid))
+			err := fmt.Errorf("invalid email found, err : %v", parseErr)
+			utils.RespondWithError(ctx, http.StatusBadRequest, err.Error())
+			return
+		}
+
 	if contact.PhoneNumber == "" {
 		utils.Logger.Error(fmt.Sprintf("phone_number field is missing, txid : %v", txid))
 		errMessage := "phone_number field is missing"
 		utils.RespondWithError(ctx, http.StatusBadRequest, errMessage)
 		return
 	}
+
+	// add check for phone number validation
+	// pattern := `^(0|91|\+91)?[6-9]\d{9}$`
+	// re := regexp.MustCompile(pattern)
+	// phoneNumber := strings.ReplaceAll(contact.PhoneNumber, " ", "")
+    // if re.Find([]byte(phoneNumber)) == nil {
+	// 	utils.Logger.Error(fmt.Sprintf("phone_number field is invalid, txid : %v", txid))
+	// 	errMessage := "phone_number field is invalid"
+	// 	utils.RespondWithError(ctx, http.StatusBadRequest, errMessage)
+	// 	return
+	// }
 }
