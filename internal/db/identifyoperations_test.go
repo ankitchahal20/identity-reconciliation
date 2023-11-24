@@ -1,10 +1,18 @@
 package db
 
 import (
+	"database/sql/driver"
+	"fmt"
+	"net/http"
+	"regexp"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/gin-gonic/gin"
+	"github.com/identity-reconciliation/internal/constants"
 	"github.com/identity-reconciliation/internal/models"
+	"github.com/identity-reconciliation/internal/utils"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -46,76 +54,108 @@ func TestTransformContact(t *testing.T) {
 	assert.Equal(t, expected, result)
 }
 
-// func TestFindAllContacts(t *testing.T) {
-// 	// Create a new mock database
-// 	db, mock, err := sqlmock.New()
-// 	assert.NoError(t, err)
-// 	defer db.Close()
+func TestFindOrCreateNewContact(t *testing.T) {
+	// mock database
+	db, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer db.Close()
 
-// 	// Create an instance of the postgres struct with the mock DB
-// 	p := postgres{
-// 		db: db,
-// 	}
+	// instance of the postgres struct with the mock DB
+	p := postgres{
+		db: db,
+	}
 
-// 	utils.InitLogClient()
+	utils.InitLogClient()
 
-// 	// Set up the test data
-// 	transactionID := "testTransactionID"
-// 	ctx := &gin.Context{
-// 		Request: &http.Request{
-// 			Header: http.Header{
-// 				constants.TransactionID: []string{transactionID},
-// 			}},
-// 	}
+	transactionID := "testTransactionID"
+	ctx := &gin.Context{
+		Request: &http.Request{
+			Header: http.Header{
+				constants.TransactionID: []string{transactionID},
+			}},
+	}
 
-// 	inputContact := models.ContactRequest{
-// 		Email:       "test@example.com",
-// 		PhoneNumber: "123456789",
-// 	}
+	inputContact := models.ContactRequest{
+		Email:       "test@example.com",
+		PhoneNumber: "123456789",
+	}
+	mock.ExpectBegin()
 
-// 	// Mock database response for Query
-// 	mockRows := sqlmock.NewRows([]string{"id", "phoneNumber", "email", "linkedId", "linkPrecedence", "createdAt", "updatedAt", "deletedAt"}).
-// 		AddRow(1, "123456789", "test@example.com", nil, "primary", time.Now(), time.Now(), nil)
 
-// 	query := "SELECT * FROM contacts WHERE email = $1 OR phoneNumber = $2"
-// 	mock.ExpectQuery(query).
-// 		WithArgs(inputContact.Email, inputContact.PhoneNumber).
-// 		WillReturnRows(mockRows)
+	// Mock database response for FindAllContacts
+	mockRows := sqlmock.NewRows([]string{"id", "phoneNumber", "email", "linkedId", "linkPrecedence", "createdAt", "updatedAt", "deletedAt"})
 
-// 	fmt.Println("Expected Query:", query)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM contacts WHERE email = $1 OR phoneNumber = $2`)).
+		WithArgs(inputContact.Email, inputContact.PhoneNumber).
+		WillReturnRows(mockRows)
 
-// 	// Call the function to test
-// 	result, dbErr := p.findAllContacts(ctx, inputContact)
-// 	fmt.Println("DBERR : ", dbErr)
-// 	// Assert that the function behaves as expected
-// 	assert.Nil(t, dbErr)
-// 	assert.NotNil(t, result)
-// 	assert.Len(t, result, 1)
+	// Define the query and expected arguments
+	query := `INSERT INTO contacts (phoneNumber, email, linkedId, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
+	expectedArgs := []driver.Value{
+		inputContact.PhoneNumber,
+		inputContact.Email,
+		nil,
+		"primary",
+		sqlmock.AnyArg(),
+		sqlmock.AnyArg(),
+	}
 
-// 	// Assert that the expected database queries were called
-// 	assert.NoError(t, mock.ExpectationsWereMet())
+	id := 0
 
-// 	// Set up the expected SQL query and result
-// 	// mockRows := sqlmock.NewRows([]string{"id", "note"}).
-// 	// 	AddRow(1, "Note 1")
+	// Define the expected result from the database
+	rows := sqlmock.NewRows([]string{"id"}).AddRow(&id)
+	mock.ExpectQuery(regexp.QuoteMeta(query)).WithArgs(expectedArgs...).WillReturnRows(rows)
 
-// 	// mock.ExpectQuery(`SELECT id, note FROM notes`).
-// 	// 	WillReturnRows(mockRows)
 
-// 	// // Call the function being tested
-// 	// notes, notesErr := p.GetNotes(ctx)
+	mock.ExpectCommit()
+	
+	result, dbErr := p.FindOrCreateContact(ctx, inputContact)
+	
+	assert.Nil(t, dbErr)
+	assert.NotNil(t, result)
 
-// 	// // Assert that the returned error is nil
-// 	// assert.Nil(t, notesErr)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
 
-// 	// // Assert the expected number of notes
-// 	// expectedNotes := []models.Notes{
-// 	// 	{NoteId: "1", Note: "Note 1"},
-// 	// }
-// 	// assert.Equal(t, expectedNotes, notes)
 
-// 	// // Assert that all expectations were met
-// 	// err = mock.ExpectationsWereMet()
-// 	// assert.Nil(t, err)
+func TestFindOrCreateContactError(t *testing.T) {
+	// mock database
+	db, mock, err := sqlmock.New()
+	assert.NoError(t, err)
+	defer db.Close()
 
-// }
+	// postgres struct with the mock DB
+	p := postgres{
+		db: db,
+	}
+
+	utils.InitLogClient()
+
+	transactionID := "testTransactionID"
+	ctx := &gin.Context{
+		Request: &http.Request{
+			Header: http.Header{
+				constants.TransactionID: []string{transactionID},
+			}},
+	}
+	mock.ExpectBegin()
+
+	inputContact := models.ContactRequest{
+		Email:       "test@example.com",
+		PhoneNumber: "123456789",
+	}
+
+	
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM contacts WHERE email = $1 OR phoneNumber = $2`)).
+		WithArgs(inputContact.Email, inputContact.PhoneNumber).
+		WillReturnError(fmt.Errorf("database error"))
+
+	mock.ExpectCommit()
+	_, dbErr := p.FindOrCreateContact(ctx, inputContact)
+
+	
+	assert.NotNil(t, dbErr)
+	
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
