@@ -21,10 +21,10 @@ type postgres struct{ db *sql.DB }
 
 type IdentityReconciliationService interface {
 	FindOrCreateContact(*gin.Context, models.ContactRequest) (models.ContactResponse, *identityreconciliationerror.IdentityReconciliationError)
-	foundOneRecord(*gin.Context, []models.Contact, string, string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError)
-	foundMultipleRecord(*gin.Context, []models.Contact, string, string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError)
-	FindAllContacts(ctx *gin.Context, inputContact models.ContactRequest) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError)
-	handleExistingContact(*gin.Context, []models.Contact, models.ContactRequest) (models.ContactResponse, *identityreconciliationerror.IdentityReconciliationError)
+	foundOneRecord(*sql.Tx, *gin.Context, []models.Contact, string, string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError)
+	foundMultipleRecord(*sql.Tx, *gin.Context, []models.Contact, string, string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError)
+	findAllContacts(*sql.Tx, *gin.Context,  models.ContactRequest) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError)
+	handleExistingContact(*sql.Tx, *gin.Context, []models.Contact, models.ContactRequest) (models.ContactResponse, *identityreconciliationerror.IdentityReconciliationError)
 }
 
 func New() (postgres, error) {

@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 	"time"
@@ -14,9 +15,20 @@ import (
 
 func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.ContactRequest) (models.ContactResponse, *identityreconciliationerror.IdentityReconciliationError) {
 	txid := ctx.Request.Header.Get(constants.TransactionID)
+	
+	tx, dbErr := p.db.Begin()
+    if dbErr != nil {
+        utils.Logger.Error(fmt.Sprintf("error starting database transaction, txid: %v, err: %v", txid, dbErr))
+        return models.ContactResponse{}, &identityreconciliationerror.IdentityReconciliationError{
+            Code:    http.StatusInternalServerError,
+            Message: fmt.Sprintf("unable to start a database transaction, err: %v", dbErr),
+            Trace:   txid,
+        }
+    }
 
-	contacts, err := p.FindAllContacts(ctx, inputContact)
+	contacts, err := p.findAllContacts(tx, ctx, inputContact)
 	if err != nil {
+		tx.Rollback()
 		utils.Logger.Error(fmt.Sprintf("error while reteriving all contacts, txid : %v", txid))
 		return models.ContactResponse{}, err
 	}
@@ -24,7 +36,12 @@ func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.Cont
 	var contactList []models.Contact
 	if len(contacts) != 0 {
 		utils.Logger.Info(fmt.Sprintf("existing contact found for the given request, txid : %v", txid))
-		return p.handleExistingContact(ctx, contacts, inputContact)
+		contactResponse, err :=  p.handleExistingContact(tx, ctx, contacts, inputContact)
+		if err != nil {
+			tx.Rollback()
+			return models.ContactResponse{}, err
+		}
+		return contactResponse, nil
 	}
 
 	utils.Logger.Info(fmt.Sprintf("no existing contact found for the given request, txid : %v", txid))
@@ -39,8 +56,9 @@ func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.Cont
 	}
 
 	query := "INSERT INTO contacts (phoneNumber, email, linkedId, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
-	dbErr := p.db.QueryRow(query, newContact.PhoneNumber, newContact.Email, newContact.LinkedID, newContact.LinkPrecedence, newContact.CreatedAt, newContact.UpdatedAt).Scan(&newContact.ID)
+	dbErr = tx.QueryRow(query, newContact.PhoneNumber, newContact.Email, newContact.LinkedID, newContact.LinkPrecedence, newContact.CreatedAt, newContact.UpdatedAt).Scan(&newContact.ID)
 	if dbErr != nil {
+		tx.Rollback()
 		utils.Logger.Error(fmt.Sprintf("error while creating a primary contact, txid : %v", txid))
 		return models.ContactResponse{}, &identityreconciliationerror.IdentityReconciliationError{
 			Code:    http.StatusInternalServerError,
@@ -49,15 +67,24 @@ func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.Cont
 		}
 	}
 	utils.Logger.Info(fmt.Sprintf("new contact created for the given request, txid : %v", txid))
+	// Commit the transaction if everything is successful
+    if err := tx.Commit(); err != nil {
+        utils.Logger.Error(fmt.Sprintf("error committing database transaction, txid: %v, err: %v", txid, err))
+        return models.ContactResponse{}, &identityreconciliationerror.IdentityReconciliationError{
+            Code:    http.StatusInternalServerError,
+            Message: fmt.Sprintf("unable to commit the database transaction, err: %v", err),
+            Trace:   txid,
+        }
+    }
 	contactList = append(contactList, newContact)
 	return transformContact(contactList), nil
 }
 
-func (p postgres) handleExistingContact(ctx *gin.Context, contacts []models.Contact, inputContact models.ContactRequest) (models.ContactResponse, *identityreconciliationerror.IdentityReconciliationError) {
+func (p postgres) handleExistingContact(tx *sql.Tx, ctx *gin.Context, contacts []models.Contact, inputContact models.ContactRequest) (models.ContactResponse, *identityreconciliationerror.IdentityReconciliationError) {
 
 	if len(contacts) == 1 {
 		if contacts[0].Email != inputContact.Email || contacts[0].PhoneNumber != inputContact.PhoneNumber {
-			contactList, err := p.foundOneRecord(ctx, contacts, inputContact.Email, inputContact.PhoneNumber)
+			contactList, err := p.foundOneRecord(tx, ctx, contacts, inputContact.Email, inputContact.PhoneNumber)
 			if err != nil {
 				return models.ContactResponse{}, err
 			}
@@ -68,7 +95,7 @@ func (p postgres) handleExistingContact(ctx *gin.Context, contacts []models.Cont
 	}
 
 	if len(contacts) > 1 {
-		contactList, err := p.foundMultipleRecord(ctx, contacts, inputContact.Email, inputContact.PhoneNumber)
+		contactList, err := p.foundMultipleRecord(tx, ctx, contacts, inputContact.Email, inputContact.PhoneNumber)
 		if err != nil {
 			return models.ContactResponse{}, err
 		}
@@ -78,14 +105,14 @@ func (p postgres) handleExistingContact(ctx *gin.Context, contacts []models.Cont
 	return models.ContactResponse{}, nil
 }
 
-func (p postgres) foundOneRecord(ctx *gin.Context, contacts []models.Contact, email string, phoneNumber string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
+func (p postgres) foundOneRecord(tx *sql.Tx, ctx *gin.Context, contacts []models.Contact, email string, phoneNumber string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
 	txid := ctx.Request.Header.Get(constants.TransactionID)
 	oldRecord := contacts[0]
 
 	// If by chance there is a problematic record, restore consistency
 	if oldRecord.LinkPrecedence == "secondary" {
 		oldRecord.LinkPrecedence = "primary"
-		_, err := p.db.Exec("UPDATE contacts SET linkPrecedence = $1 WHERE id = $2", oldRecord.LinkPrecedence, oldRecord.ID)
+		_, err := tx.Exec("UPDATE contacts SET linkPrecedence = $1 WHERE id = $2", oldRecord.LinkPrecedence, oldRecord.ID)
 		if err != nil {
 			utils.Logger.Error(fmt.Sprintf("error while updating the contacts info, txid : %v", txid))
 			return nil, &identityreconciliationerror.IdentityReconciliationError{
@@ -105,7 +132,7 @@ func (p postgres) foundOneRecord(ctx *gin.Context, contacts []models.Contact, em
 		UpdatedAt:      time.Now(),
 	}
 	query := "INSERT INTO contacts (phoneNumber, email, linkedId, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
-	err := p.db.QueryRow(query, newRecord.PhoneNumber, newRecord.Email, newRecord.LinkedID, newRecord.LinkPrecedence, newRecord.CreatedAt, newRecord.UpdatedAt).Scan(&newRecord.ID)
+	err := tx.QueryRow(query, newRecord.PhoneNumber, newRecord.Email, newRecord.LinkedID, newRecord.LinkPrecedence, newRecord.CreatedAt, newRecord.UpdatedAt).Scan(&newRecord.ID)
 	if err != nil {
 		utils.Logger.Error(fmt.Sprintf("error while creating a secondary contact, txid : %v", txid))
 		return nil, &identityreconciliationerror.IdentityReconciliationError{
@@ -119,7 +146,7 @@ func (p postgres) foundOneRecord(ctx *gin.Context, contacts []models.Contact, em
 }
 
 // foundMultipleRecord function
-func (p postgres) foundMultipleRecord(ctx *gin.Context, contacts []models.Contact, email, phoneNumber string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
+func (p postgres) foundMultipleRecord(tx *sql.Tx, ctx *gin.Context, contacts []models.Contact, email, phoneNumber string) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
 	txid := ctx.Request.Header.Get(constants.TransactionID)
 	primaryRec := contacts[0]
 
@@ -134,7 +161,7 @@ func (p postgres) foundMultipleRecord(ctx *gin.Context, contacts []models.Contac
 
 	// Execute SQL update statements
 	for _, statement := range statements {
-		_, err := p.db.Exec(statement)
+		_, err := tx.Exec(statement)
 		if err != nil {
 			utils.Logger.Error(fmt.Sprintf("error while updating contacts information, txid : %v", txid))
 			return nil, &identityreconciliationerror.IdentityReconciliationError{
@@ -155,7 +182,7 @@ func (p postgres) foundMultipleRecord(ctx *gin.Context, contacts []models.Contac
 	}
 
 	query := "INSERT INTO contacts (phoneNumber, email, linkedId, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
-	err := p.db.QueryRow(query, newRecord.PhoneNumber, newRecord.Email, newRecord.LinkedID, newRecord.LinkPrecedence, newRecord.CreatedAt, newRecord.UpdatedAt).Scan(&newRecord.ID)
+	err := tx.QueryRow(query, newRecord.PhoneNumber, newRecord.Email, newRecord.LinkedID, newRecord.LinkPrecedence, newRecord.CreatedAt, newRecord.UpdatedAt).Scan(&newRecord.ID)
 	if err != nil {
 		utils.Logger.Error(fmt.Sprintf("error while creating a secondary contact, txid : %v", txid))
 		return nil, &identityreconciliationerror.IdentityReconciliationError{
@@ -168,12 +195,12 @@ func (p postgres) foundMultipleRecord(ctx *gin.Context, contacts []models.Contac
 	return append(contacts, newRecord), nil
 }
 
-func (p postgres) FindAllContacts(ctx *gin.Context, inputContact models.ContactRequest) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
+func (p postgres) findAllContacts(tx *sql.Tx, ctx *gin.Context, inputContact models.ContactRequest) ([]models.Contact, *identityreconciliationerror.IdentityReconciliationError) {
 	txid := ctx.Request.Header.Get(constants.TransactionID)
 
 	var contacts []models.Contact
 	query := "SELECT * FROM contacts WHERE email = $1 OR phoneNumber = $2"
-	rows, err := p.db.Query(query, inputContact.Email, inputContact.PhoneNumber)
+	rows, err := tx.Query(query, inputContact.Email, inputContact.PhoneNumber)
 	if err != nil {
 		utils.Logger.Error(fmt.Sprintf("error while fetching all contacts information, txid : %v", txid))
 		return []models.Contact{}, &identityreconciliationerror.IdentityReconciliationError{
