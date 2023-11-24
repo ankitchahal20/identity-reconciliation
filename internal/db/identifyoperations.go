@@ -13,6 +13,19 @@ import (
 	"github.com/identity-reconciliation/internal/utils"
 )
 
+func commit(tx *sql.Tx, txid string) *identityreconciliationerror.IdentityReconciliationError {
+	err := tx.Commit()
+	if err != nil {
+		utils.Logger.Error(fmt.Sprintf("error committing database transaction, txid: %v, err: %v", txid, err))
+		return &identityreconciliationerror.IdentityReconciliationError{
+			Code:    http.StatusInternalServerError,
+			Message: fmt.Sprintf("unable to commit the database transaction, err: %v", err),
+			Trace:   txid,
+		}
+	}
+	return nil
+}
+
 func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.ContactRequest) (models.ContactResponse, *identityreconciliationerror.IdentityReconciliationError) {
 	txid := ctx.Request.Header.Get(constants.TransactionID)
 	
@@ -26,9 +39,10 @@ func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.Cont
         }
     }
 
+	defer tx.Rollback()
+
 	contacts, err := p.findAllContacts(tx, ctx, inputContact)
 	if err != nil {
-		tx.Rollback()
 		utils.Logger.Error(fmt.Sprintf("error while reteriving all contacts, txid : %v", txid))
 		return models.ContactResponse{}, err
 	}
@@ -38,7 +52,11 @@ func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.Cont
 		utils.Logger.Info(fmt.Sprintf("existing contact found for the given request, txid : %v", txid))
 		contactResponse, err :=  p.handleExistingContact(tx, ctx, contacts, inputContact)
 		if err != nil {
-			tx.Rollback()
+			return models.ContactResponse{}, err
+		}
+		// Commit
+		err = commit(tx, txid)
+		if err != nil {
 			return models.ContactResponse{}, err
 		}
 		return contactResponse, nil
@@ -58,7 +76,6 @@ func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.Cont
 	query := "INSERT INTO contacts (phoneNumber, email, linkedId, linkPrecedence, createdAt, updatedAt) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id"
 	dbErr = tx.QueryRow(query, newContact.PhoneNumber, newContact.Email, newContact.LinkedID, newContact.LinkPrecedence, newContact.CreatedAt, newContact.UpdatedAt).Scan(&newContact.ID)
 	if dbErr != nil {
-		tx.Rollback()
 		utils.Logger.Error(fmt.Sprintf("error while creating a primary contact, txid : %v", txid))
 		return models.ContactResponse{}, &identityreconciliationerror.IdentityReconciliationError{
 			Code:    http.StatusInternalServerError,
@@ -68,14 +85,10 @@ func (p postgres) FindOrCreateContact(ctx *gin.Context, inputContact models.Cont
 	}
 	utils.Logger.Info(fmt.Sprintf("new contact created for the given request, txid : %v", txid))
 	// Commit the transaction if everything is successful
-    if err := tx.Commit(); err != nil {
-        utils.Logger.Error(fmt.Sprintf("error committing database transaction, txid: %v, err: %v", txid, err))
-        return models.ContactResponse{}, &identityreconciliationerror.IdentityReconciliationError{
-            Code:    http.StatusInternalServerError,
-            Message: fmt.Sprintf("unable to commit the database transaction, err: %v", err),
-            Trace:   txid,
-        }
-    }
+    err = commit(tx, txid)
+	if err != nil {
+			return models.ContactResponse{}, err
+	}
 	contactList = append(contactList, newContact)
 	return transformContact(contactList), nil
 }

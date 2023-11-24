@@ -19,7 +19,7 @@ func getTransactionID(c *gin.Context) string {
 	_, err := uuid.Parse(transactionID)
 	if err != nil {
 		transactionID = uuid.New().String()
-		c.Set(constants.TransactionID, transactionID)
+		c.Request.Header.Set(constants.TransactionID, transactionID)
 	}
 	return transactionID
 }
